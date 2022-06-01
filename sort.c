@@ -273,7 +273,8 @@ int main(int argc, char **argv)
     {
         const BenchStats stats = Bench(&SortArray, &array);
 
-        LOG("Sort -- median/mean/min/max (ms): %f / %f / %f / %f",
+        LOG("Sorting %u elements in median/mean/min/max milliseconds: %f / %f / %f / %f",
+            array.size,
             stats.median * 1e3,
             stats.mean * 1e3,
             stats.min * 1e3,
