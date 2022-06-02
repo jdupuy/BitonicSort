@@ -38,6 +38,7 @@ enum {
 
 enum {
     PROGRAM_SORT,
+    PROGRAM_SORT_SM,
 
     PROGRAM_COUNT
 };
@@ -76,11 +77,31 @@ static bool LoadSortProgram()
     return glGetError() == GL_NO_ERROR;
 }
 
+static bool LoadSortSmProgram()
+{
+    djg_program *djgp = djgp_create();
+    GLuint *glp = &g_gl.programs[PROGRAM_SORT_SM];
+
+    djgp_push_string(djgp, "#define LOCATION_ARRAY %i\n", BUFFER_ARRAY);
+    djgp_push_file(djgp, PATH_TO_SHADER_DIRECTORY "sort-sm.glsl");
+    djgp_push_string(djgp, "#ifdef COMPUTE_SHADER\n#endif");
+    if (!djgp_to_gl(djgp, 450, false, true, glp)) {
+        djgp_release(djgp);
+
+        return false;
+    }
+
+    djgp_release(djgp);
+
+    return glGetError() == GL_NO_ERROR;
+}
+
 bool LoadPrograms()
 {
     bool success = true;
 
     if (success) success = LoadSortProgram();
+    if (success) success = LoadSortSmProgram();
 
     return success;
 }
@@ -135,6 +156,7 @@ void Release()
 void SortArray(const Array *array)
 {
     const GLuint program = g_gl.programs[PROGRAM_SORT];
+
     glUseProgram(program);
     glUniform1ui(glGetUniformLocation(program, "u_ArraySize"), array->size);
 
@@ -146,6 +168,50 @@ void SortArray(const Array *array)
         }
     }
 }
+
+uint32_t Min(uint32_t x, uint32_t y)
+{
+    return x > y ? y : x;
+}
+
+uint32_t Max(uint32_t x, uint32_t y)
+{
+    return x > y ? x : y;
+}
+
+
+
+void SortArray_Fast(const Array *array)
+{
+    uint32_t d2;
+
+    glUseProgram(g_gl.programs[PROGRAM_SORT]);
+    glUniform1ui(glGetUniformLocation(g_gl.programs[PROGRAM_SORT], "u_ArraySize"), array->size);
+    glUseProgram(g_gl.programs[PROGRAM_SORT_SM]);
+    glUniform1ui(glGetUniformLocation(g_gl.programs[PROGRAM_SORT_SM], "u_ArraySize"), array->size);
+
+    for (d2 = 1u; d2 < Min(128u, array->size); d2*= 2u) {
+        glUniform2ui(glGetUniformLocation(g_gl.programs[PROGRAM_SORT_SM], "u_LoopValue"), d2, d2);
+        glDispatchCompute(Max(1u, array->size / 128u), 1, 1);
+        glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    }
+
+    for (; d2 < array->size; d2*= 2u) {
+        glUseProgram(g_gl.programs[PROGRAM_SORT]);
+
+        for (uint32_t d1 = d2; d1 >= 128u; d1/= 2u) {
+            glUniform2ui(glGetUniformLocation(g_gl.programs[PROGRAM_SORT], "u_LoopValue"), d1, d2);
+            glDispatchCompute(Max(1u, array->size / 128u), 1, 1);
+            glMemoryBarrier(GL_ALL_BARRIER_BITS);
+        }
+
+        glUseProgram(g_gl.programs[PROGRAM_SORT_SM]);
+        glUniform2ui(glGetUniformLocation(g_gl.programs[PROGRAM_SORT_SM], "u_LoopValue"), 64u, d2);
+        glDispatchCompute(Max(1, array->size / 128u), 1, 1);
+        glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    }
+}
+
 
 typedef struct {
     double min, max, median, mean;
@@ -214,6 +280,14 @@ void GetArray(Array *array)
     glUnmapNamedBuffer(*buffer);
 }
 
+void ResetArray(Array *array)
+{
+    srand(5219);
+
+    for (uint32_t dataID = 0; dataID < array->size; ++dataID) {
+        array->data[dataID] = rand();
+    }
+}
 
 int main(int argc, char **argv)
 {
@@ -224,11 +298,6 @@ int main(int argc, char **argv)
     }
 
     array.data = (uint32_t *)malloc(array.size * sizeof(uint32_t));
-    srand(1219);
-
-    for (uint32_t dataID = 0; dataID < array.size; ++dataID) {
-        array.data[dataID] = rand();
-    }
 
     LOG("Loading {OpenGL Window}");
     glfwInit();
@@ -269,11 +338,13 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    ResetArray(&array);
+
     // execute sorting kernel
     {
         const BenchStats stats = Bench(&SortArray, &array);
 
-        LOG("Sorting %u elements in median/mean/min/max milliseconds: %f / %f / %f / %f",
+        LOG("Sorted %u elements in median/mean/min/max milliseconds: %f / %f / %f / %f",
             array.size,
             stats.median * 1e3,
             stats.mean * 1e3,
@@ -285,6 +356,30 @@ int main(int argc, char **argv)
         for (uint32_t dataID = 1; dataID < array.size; ++dataID) {
             if (array.data[dataID] < array.data[dataID - 1]) {
                 printf("failed!\n");
+                break;
+            }
+        }
+    }
+
+    ResetArray(&array);
+
+    // execute sorting kernel (optimized)
+    {
+        const BenchStats stats = Bench(&SortArray_Fast, &array);
+
+        LOG("Sorted %u elements in median/mean/min/max milliseconds: %f / %f / %f / %f",
+            array.size,
+            stats.median * 1e3,
+            stats.mean * 1e3,
+            stats.min * 1e3,
+            stats.max * 1e3);
+
+        GetArray(&array);
+
+        for (uint32_t dataID = 1; dataID < array.size; ++dataID) {
+            if (array.data[dataID] < array.data[dataID - 1]) {
+                printf("failed!\n");
+                break;
             }
         }
     }
