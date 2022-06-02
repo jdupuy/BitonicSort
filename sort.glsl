@@ -12,7 +12,7 @@ void main()
 {
     const uint threadID = gl_GlobalInvocationID.x;
 
-    if (threadID >= u_ArraySize / 2)
+    if (threadID >= u_ArraySize / 2u)
         return;
 
     const uint d1 = u_LoopValue.x;
